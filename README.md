@@ -166,6 +166,12 @@ Folders you add are saved there automatically.
 - `macos/icon.swift`: draws the app icon.
 - `macos/build-app.sh`: builds both parts and assembles `Anduin.app`.
 
+## Contributing
+
+Pull requests are welcome. If you work with an AI coding agent, point it at
+[AGENTS.md](AGENTS.md) (Claude Code loads it automatically through `CLAUDE.md`):
+it maps the code and lists how to build, test and verify changes.
+
 ## License
 
 [MIT](LICENSE)
