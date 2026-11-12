@@ -7,12 +7,13 @@ change the code safely.
 
 ## Map
 
-- `src/app.rs`: state, input handling (modes: normal, prefix, scroll, add-dir, confirm), sessions per folder.
+- `src/app.rs`: state, input handling (modes: normal, prefix, scroll, add-dir, confirm, new-session chooser), sessions per folder.
 - `src/ui.rs`: drawing. Records clickable areas in `app.hits` while drawing; later entries win.
 - `src/session.rs`: one PTY + vt100 parser per session; answers terminal queries (DSR, DA, OSC 10/11).
 - `src/mascot.rs`: finds Claude's mascot on screen and paints the configured one over it.
 - `src/theme.rs`: tint, rotating Claude's orange hues only.
 - `src/keys.rs`: key and mouse encoding sent to the child.
+- `src/tools.rs`: what a session can run (Claude, a shell, other AI CLIs) and whether each is on `PATH`. Tint and mascot apply to Claude sessions only.
 - `src/config.rs`, `src/picker.rs`: config file, Finder folder picker.
 
 ## Build and verify

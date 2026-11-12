@@ -5,6 +5,7 @@ mod mascot;
 mod picker;
 mod session;
 mod theme;
+mod tools;
 mod ui;
 
 use anyhow::Result;
@@ -86,11 +87,7 @@ fn main() -> Result<()> {
     let size = term.size()?;
     let mut app = App::new(cfg, selected, size.width, size.height);
     if !dirs.is_empty() {
-        // Launched with explicit dirs: jump straight into the first one.
-        app.handle(event::Event::Key(event::KeyEvent::new(
-            event::KeyCode::Enter,
-            event::KeyModifiers::NONE,
-        )));
+        app.start_claude();
     }
     if !skipped.is_empty() {
         app.message = Some(format!("skipped (not found): {}", skipped.join(", ")));

@@ -2,6 +2,7 @@ use crate::app::{App, Click, Confirm, Focus, Mode, SIDEBAR_WIDTH, Sel, Slot};
 use crate::config::shorten;
 use crate::mascot::Mascot;
 use crate::theme::Theme;
+use crate::tools::Kind;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -30,32 +31,117 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_sidebar(f, app, side);
     draw_pane(f, app, pane);
     draw_status(f, app, status);
-    if let Mode::Confirm(confirm) = app.mode {
-        draw_confirm(f, app, confirm);
+    match app.mode {
+        Mode::Confirm(confirm) => draw_confirm(f, app, confirm),
+        Mode::NewSession { folder, cursor } => draw_launcher(f, app, folder, cursor),
+        _ => {}
     }
+}
+
+/// Centered list of what a new session can run; tools that aren't installed
+/// are shown dimmed and can't be picked.
+fn draw_launcher(f: &mut Frame, app: &mut App, folder: usize, cursor: usize) {
+    let accent = app.theme.accent;
+    let area = f.area();
+    let name = app.cfg.projects.get(folder).map(|p| p.name.clone()).unwrap_or_default();
+    let width = 58.min(area.width);
+    let height = (app.tools.len() as u16 + 5).min(area.height);
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, rect);
+    let title = Line::from(vec![
+        Span::styled(" New session ", Style::new().fg(TEXT).bold()),
+        Span::styled(format!("· {} ", truncate_end(&name, width.saturating_sub(20) as usize)), Style::new().fg(MUTED)),
+    ]);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(accent))
+        .title(title)
+        .style(Style::new().bg(PANEL));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    app.hits.push((rect, Click::Dialog));
+
+    let list = Rect::new(inner.x, inner.y + 1, inner.width, inner.height.saturating_sub(3));
+    let w = list.width as usize;
+    for (i, tool) in app.tools.iter().enumerate().take(list.height as usize) {
+        let row = Rect::new(list.x, list.y + i as u16, list.width, 1);
+        let selected = i == cursor;
+        let bg = if selected {
+            ITEM_SELECTED
+        } else if app.hover == Some(Click::Tool(i)) && tool.available {
+            ITEM_HOVER
+        } else {
+            PANEL
+        };
+        let (glyph, glyph_color) = match tool.kind {
+            Kind::Claude => ("✻", accent),
+            Kind::Shell => ("❯", GREEN),
+            Kind::Other => ("◇", SUBTLE),
+        };
+        let (glyph_color, name_style, right, right_color) = if tool.available {
+            let name_style = if selected { Style::new().fg(TEXT).bold() } else { Style::new().fg(SUBTLE) };
+            (glyph_color, name_style, tool.program(), MUTED)
+        } else {
+            (FAINT, Style::new().fg(FAINT), "not installed".to_string(), FAINT)
+        };
+        let num = if i < 9 { format!("{} ", i + 1) } else { "  ".into() };
+        let bar = if selected { Span::styled("▌", Style::new().fg(accent)) } else { Span::raw(" ") };
+        // bar(1) + space(1) + num(2) + space(1) + glyph(2) | right + space(2)
+        let label = truncate_end(&tool.name, w.saturating_sub(7 + right.chars().count() + 3));
+        let pad = w.saturating_sub(7 + label.chars().count() + right.chars().count() + 2);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                bar,
+                Span::styled(format!(" {num} "), Style::new().fg(if tool.available { MUTED } else { FAINT })),
+                Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
+                Span::styled(label, name_style),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(right, Style::new().fg(right_color)),
+            ]))
+            .style(Style::new().bg(bg)),
+            row,
+        );
+        app.hits.push((row, Click::Tool(i)));
+    }
+
+    let hint_row = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let key = |k: &str| Span::styled(k.to_string(), Style::new().fg(accent).bold());
+    let txt = |t: &str| Span::styled(t.to_string(), Style::new().fg(MUTED));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            key("↑↓"), txt(" choose  "), key("Enter"), txt(" start  "),
+            key("1-9"), txt(" quick  "), key("Esc"), txt(" cancel"),
+        ]))
+        .alignment(Alignment::Center),
+        hint_row,
+    );
 }
 
 /// Centered yes/no dialog with clickable buttons.
 fn draw_confirm(f: &mut Frame, app: &mut App, confirm: Confirm) {
-    let (title, message, yes) = match confirm {
+    let (title, message, yes): (String, String, &str) = match confirm {
         Confirm::RemoveFolder(fi) => {
             let name = app.cfg.projects.get(fi).map(|p| p.name.clone()).unwrap_or_default();
             (
                 format!("Remove “{name}”?"),
-                "Its sessions are closed. Files on disk are not touched.",
+                "Its sessions are closed. Files on disk are not touched.".into(),
                 "Remove",
             )
         }
         Confirm::CloseSession(fi, s) => {
-            let label = app
-                .slot(Sel { folder: fi, session: Some(s) })
-                .map(session_label)
-                .unwrap_or_default();
-            (format!("Close {label}?"), "Claude in this session will be stopped.", "Close")
+            let slot = app.slot(Sel { folder: fi, session: Some(s) });
+            let label = slot.map(session_label).unwrap_or_default();
+            let noun = slot.map(|s| s.tool.noun().to_string()).unwrap_or_default();
+            (format!("Close {label}?"), format!("{noun} in this session will be stopped."), "Close")
         }
         Confirm::Quit => (
             "Quit anduin?".to_string(),
-            "All running sessions will be stopped.",
+            "All running sessions will be stopped.".into(),
             "Quit",
         ),
     };
@@ -329,13 +415,17 @@ fn selection_bar(app: &App, sel: Sel) -> Span<'static> {
     }
 }
 
-/// "#2 Fix login bug" using the title Claude sets, or "#2 new session".
+/// "#2 Fix login bug" using the title the program sets, else "#2 new session"
+/// for Claude or "#2 Codex" for other tools.
 pub fn session_label(slot: &Slot) -> String {
     let title = slot.session.parser().callbacks().title.clone().unwrap_or_default();
     // Claude prefixes its title with a status glyph such as "✳ ".
     let title = title.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
     if title.is_empty() || title == "Claude Code" {
-        format!("#{} new session", slot.id)
+        match slot.tool.kind {
+            Kind::Claude => format!("#{} new session", slot.id),
+            _ => format!("#{} {}", slot.id, slot.tool.name),
+        }
     } else {
         format!("#{} {title}", slot.id)
     }
@@ -398,16 +488,22 @@ fn draw_pane_inner(f: &mut Frame, app: &App, mut block: Block, area: Rect) -> (b
     ];
     if let Some(slot) = app.current_slot() {
         title.push(Span::styled(format!("· #{} ", slot.id), Style::new().fg(accent)));
+        if slot.tool.kind != Kind::Claude {
+            title.push(Span::styled(format!("{} ", slot.tool.name), Style::new().fg(MUTED)));
+        }
     }
     block = block.title(Line::from(title));
 
     let inner = block.inner(area);
     let Some(session) = app.current() else {
         f.render_widget(block, area);
+        if matches!(app.mode, Mode::NewSession { .. }) {
+            return (false, None);
+        }
         let msg = Paragraph::new(vec![
             Line::from("No session in this folder yet.").fg(SUBTLE),
             Line::from(""),
-            Line::from(format!("Press Enter to start `{}`.", app.cfg.command)).fg(MUTED),
+            Line::from("Press Enter to choose what to start.").fg(MUTED),
         ])
         .alignment(Alignment::Center);
         f.render_widget(msg, centered(inner, 3));
@@ -436,11 +532,14 @@ fn draw_pane_inner(f: &mut Frame, app: &App, mut block: Block, area: Rect) -> (b
     }
     f.render_widget(block, area);
     let screen = parser.screen();
-    render_screen(screen, inner, f.buffer_mut(), &app.theme);
+    // Tint and mascot are about Claude's look; other programs render as-is.
+    let is_claude = app.current_slot().is_some_and(|s| s.tool.kind == Kind::Claude);
+    let plain = Theme::new("none");
+    render_screen(screen, inner, f.buffer_mut(), if is_claude { &app.theme } else { &plain });
     let mut animating = false;
     let mut mascot_rect = None;
     // Not while scrolled back: the mascot is only replaced on the live view.
-    if let Some(mascot) = app.mascot.as_ref().filter(|_| offset == 0) {
+    if let Some(mascot) = app.mascot.as_ref().filter(|_| offset == 0 && is_claude) {
         if let Some((row, col)) = Mascot::find(screen) {
             mascot.draw(f.buffer_mut(), inner, row, col);
             animating = mascot.is_animated();
@@ -514,6 +613,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             }
             Line::from(spans)
         }
+        Mode::NewSession { .. } => Line::from(vec![
+            key(" j/k"), txt(" choose  "),
+            key("Enter"), txt(" start  "),
+            key("1-9"), txt(" start that one  "),
+            key("Esc"), txt(" cancel  "),
+            txt("dimmed tools aren't installed"),
+        ]),
         Mode::Confirm(_) => Line::from(vec![
             key(" y"), txt(" / "), key("Enter"), txt(" confirm   "),
             key("n"), txt(" / "), key("Esc"), txt(" cancel"),

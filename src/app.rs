@@ -4,6 +4,7 @@ use crate::mascot::Mascot;
 use crate::picker;
 use crate::session::Session;
 use crate::theme::Theme;
+use crate::tools::{self, Tool};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -29,6 +30,8 @@ pub enum Mode {
     AddDir { input: String, error: Option<String> },
     /// A yes/no dialog; answered with y/n or by clicking its buttons.
     Confirm(Confirm),
+    /// Choosing what to run in a new session of `folder`; `cursor` indexes `App::tools`.
+    NewSession { folder: usize, cursor: usize },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,10 +59,14 @@ pub enum Click {
     AddFolder,
     ConfirmYes,
     ConfirmNo,
+    Tool(usize),
+    /// The body of a dialog, so clicks on it don't fall through.
+    Dialog,
 }
 
 pub struct Slot {
     pub session: Session,
+    pub tool: Tool,
     /// Session rang the bell / sent a notification while not visible.
     pub attention: bool,
     /// Number shown in the sidebar, unique within its folder.
@@ -94,6 +101,9 @@ pub struct App {
     pub mascot_rect: Option<Rect>,
     /// First visible sidebar row.
     pub side_scroll: usize,
+    /// What a new session can run, refreshed each time the chooser opens.
+    pub tools: Vec<Tool>,
+    last_tool: usize,
     /// Inner size of the terminal pane (rows, cols).
     pane: (u16, u16),
 }
@@ -108,6 +118,7 @@ impl App {
             None => (None, None),
         };
         let folders = cfg.projects.iter().map(|_| Folder::default()).collect();
+        let tools = tools::detect(&cfg.command, &cfg.tools);
         let sel = (!cfg.projects.is_empty()).then(|| Sel {
             folder: selected.min(cfg.projects.len() - 1),
             session: None,
@@ -130,6 +141,8 @@ impl App {
             animating: false,
             mascot_rect: None,
             side_scroll: 0,
+            tools,
+            last_tool: 0,
             pane: pane_size(width, height),
         }
     }
@@ -247,6 +260,9 @@ impl App {
             }
             return;
         }
+        if let Mode::NewSession { folder, .. } = self.mode {
+            return self.on_launcher_mouse(m, folder);
+        }
         if !matches!(self.mode, Mode::Normal | Mode::Scroll) {
             return;
         }
@@ -285,13 +301,13 @@ impl App {
                     match click {
                         Click::Select(sel) => self.open(sel),
                         Click::Folder(f) => self.open(self.first_entry(f)),
-                        Click::NewSession(f) => self.new_session(f),
+                        Click::NewSession(f) => self.choose_tool(f),
                         Click::CloseSession(f, s) => {
                             self.mode = Mode::Confirm(Confirm::CloseSession(f, s))
                         }
                         Click::RemoveFolder(f) => self.mode = Mode::Confirm(Confirm::RemoveFolder(f)),
                         Click::AddFolder => self.pick_folder(),
-                        Click::ConfirmYes | Click::ConfirmNo => {}
+                        Click::ConfirmYes | Click::ConfirmNo | Click::Tool(_) | Click::Dialog => {}
                     }
                 } else if in_pane && self.sel.is_some() {
                     self.focus = Focus::Term;
@@ -321,7 +337,54 @@ impl App {
                     self.confirm(confirm);
                 }
             }
+            Mode::NewSession { folder, cursor } => self.on_launcher_key(key, folder, cursor),
         }
+    }
+
+    fn on_launcher_key(&mut self, key: KeyEvent, folder: usize, cursor: usize) {
+        let cursor = match key.code {
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => self.next_tool(cursor, 1),
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => self.next_tool(cursor, -1),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => {
+                return self.launch(folder, cursor);
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = c as usize - '1' as usize;
+                match self.tools.get(i) {
+                    Some(t) if t.available => return self.launch(folder, i),
+                    _ => cursor,
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => return,
+            _ => cursor,
+        };
+        self.mode = Mode::NewSession { folder, cursor };
+    }
+
+    fn on_launcher_mouse(&mut self, m: MouseEvent, folder: usize) {
+        if let Some(Click::Tool(i)) = self.hover {
+            if self.tools.get(i).is_some_and(|t| t.available) {
+                self.mode = Mode::NewSession { folder, cursor: i };
+            }
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+            match self.hover {
+                Some(Click::Tool(i)) if self.tools.get(i).is_some_and(|t| t.available) => {
+                    self.launch(folder, i)
+                }
+                Some(Click::Tool(_) | Click::Dialog) => {}
+                _ => self.mode = Mode::Normal,
+            }
+        }
+    }
+
+    /// Next installed tool after `from` in direction `delta`, wrapping around.
+    fn next_tool(&self, from: usize, delta: isize) -> usize {
+        let n = self.tools.len() as isize;
+        (1..=n)
+            .map(|step| (from as isize + delta * step).rem_euclid(n) as usize)
+            .find(|&i| self.tools[i].available)
+            .unwrap_or(from)
     }
 
     fn on_normal_key(&mut self, key: KeyEvent) {
@@ -372,7 +435,7 @@ impl App {
             KeyCode::Char('N') => self.begin_add_dir(),
             KeyCode::Char('c') | KeyCode::Char('+') => {
                 if let Some(sel) = self.sel {
-                    self.new_session(sel.folder);
+                    self.choose_tool(sel.folder);
                 }
             }
             KeyCode::Char('x') => {
@@ -596,10 +659,10 @@ impl App {
         }
     }
 
-    /// Selects an entry, starting a session for an empty folder, and focuses it.
+    /// Selects an entry and focuses it; an empty folder asks what to start.
     fn open(&mut self, sel: Sel) {
         match sel.session {
-            None => self.new_session(sel.folder),
+            None => self.choose_tool(sel.folder),
             Some(s) => {
                 self.sel = Some(sel);
                 self.focus = Focus::Term;
@@ -610,22 +673,46 @@ impl App {
         }
     }
 
-    /// Starts another session in folder `f` and focuses it.
-    fn new_session(&mut self, f: usize) {
-        let Some(session) = self.spawn(f) else { return };
+    /// Opens the chooser for a new session in folder `f`.
+    fn choose_tool(&mut self, f: usize) {
+        self.tools = tools::detect(&self.cfg.command, &self.cfg.tools);
+        let cursor = if self.tools.get(self.last_tool).is_some_and(|t| t.available) {
+            self.last_tool
+        } else {
+            self.next_tool(self.tools.len() - 1, 1)
+        };
+        if self.sel.is_none_or(|s| s.folder != f) {
+            self.sel = Some(self.first_entry(f));
+        }
+        self.mode = Mode::NewSession { folder: f, cursor };
+    }
+
+    /// Starts Claude in the selected folder without asking (used at startup).
+    pub fn start_claude(&mut self) {
+        if let Some(sel) = self.sel {
+            self.launch(sel.folder, 0);
+        }
+    }
+
+    /// Starts tool `t` as a new session in folder `f` and focuses it.
+    fn launch(&mut self, f: usize, t: usize) {
+        let Some(tool) = self.tools.get(t).cloned() else { return };
+        self.last_tool = t;
+        let Some(session) = self.spawn(f, &tool.command) else { return };
         let folder = &mut self.folders[f];
         folder.next_id += 1;
-        folder.sessions.push(Slot { session, attention: false, id: folder.next_id });
+        folder.sessions.push(Slot { session, tool, attention: false, id: folder.next_id });
         self.sel = Some(Sel { folder: f, session: Some(folder.sessions.len() - 1) });
         self.focus = Focus::Term;
     }
 
-    /// Restarts the selected session in place, or starts one.
+    /// Restarts the selected session in place with the same tool.
     fn restart(&mut self, sel: Sel) {
         let Some(s) = sel.session else {
-            return self.new_session(sel.folder);
+            return self.choose_tool(sel.folder);
         };
-        if let Some(session) = self.spawn(sel.folder) {
+        let command = self.folders[sel.folder].sessions[s].tool.command.clone();
+        if let Some(session) = self.spawn(sel.folder, &command) {
             // Replacing drops the old session, which kills its child.
             self.folders[sel.folder].sessions[s].session = session;
             self.sel = Some(sel);
@@ -633,10 +720,10 @@ impl App {
         }
     }
 
-    fn spawn(&mut self, f: usize) -> Option<Session> {
+    fn spawn(&mut self, f: usize, command: &str) -> Option<Session> {
         let (rows, cols) = self.pane;
         let path = &self.cfg.projects[f].path;
-        match Session::spawn(path, &self.cfg.command, rows, cols, self.dirty.clone()) {
+        match Session::spawn(path, command, rows, cols, self.dirty.clone()) {
             Ok(s) => Some(s),
             Err(e) => {
                 self.message = Some(format!("{e:#}"));
@@ -657,4 +744,53 @@ fn pane_size(width: u16, height: u16) -> (u16, u16) {
     let rows = height.saturating_sub(3).max(1);
     let cols = width.saturating_sub(SIDEBAR_WIDTH + 2).max(1);
     (rows, cols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::Kind;
+
+    fn tool(name: &str, available: bool) -> Tool {
+        Tool { kind: Kind::Other, name: name.into(), command: name.into(), available }
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn chooser() -> App {
+        let mut app = App::new(Config::default(), 0, 120, 40);
+        app.tools = vec![tool("a", true), tool("b", false), tool("c", true), tool("d", false)];
+        app.mode = Mode::NewSession { folder: 0, cursor: 0 };
+        app
+    }
+
+    fn cursor(app: &App) -> Option<usize> {
+        match app.mode {
+            Mode::NewSession { cursor, .. } => Some(cursor),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn chooser_skips_tools_that_are_not_installed() {
+        let mut app = chooser();
+        app.handle(key(KeyCode::Down));
+        assert_eq!(cursor(&app), Some(2));
+        app.handle(key(KeyCode::Down));
+        assert_eq!(cursor(&app), Some(0));
+        app.handle(key(KeyCode::Up));
+        assert_eq!(cursor(&app), Some(2));
+    }
+
+    #[test]
+    fn chooser_ignores_number_of_missing_tool_and_closes_on_esc() {
+        let mut app = chooser();
+        app.handle(key(KeyCode::Char('2')));
+        assert_eq!(cursor(&app), Some(0));
+        app.handle(key(KeyCode::Esc));
+        assert_eq!(cursor(&app), None);
+        assert!(app.folders.iter().all(|f| f.sessions.is_empty()));
+    }
 }

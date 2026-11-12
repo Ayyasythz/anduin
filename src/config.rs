@@ -63,6 +63,15 @@ pub struct Config {
     /// Folder opened (and added if needed) when anduin starts without arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Extra programs offered when starting a session, besides the built-in list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolSpec>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ToolSpec {
+    pub name: String,
+    pub command: String,
 }
 
 fn default_command() -> String {
@@ -86,6 +95,7 @@ impl Default for Config {
             tint: default_tint(),
             mascot: None,
             default: None,
+            tools: Vec::new(),
         }
     }
 }
