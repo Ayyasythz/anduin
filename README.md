@@ -10,27 +10,18 @@
 
 Anduin is a small terminal multiplexer built for [Claude Code](https://claude.com/claude-code).
 The left side is a sidebar of your project folders. The right side is a live
-Claude session. Switch between projects without juggling terminal tabs, and keep
+Claude session, or a terminal or another AI CLI if you pick one. Switch between projects without juggling terminal tabs, and keep
 several Claude sessions running in the same folder.
 
-```
-┌ anduin ─────── 2 running ┐┌ agent-knowledge-workflow ~/Documents/… · #1 ───────┐
-│ 1 mac                + × ││                                                     │
-│   ▸ start a session      ││   ▐▛███▜▌   Claude Code                             │
-│ 2 agent-knowledge…   + × ││  ▝▜█████▛▘  ~/Documents/…/agent-knowledge-workflow  │
-│ ▌ ● #1 fix the parser  × ││                                                     │
-│   ○ #2 new session  idle ││  > _                                                │
-│ 3 genesis-miniapps   + × ││                                                     │
-│                          ││                                                     │
-│       + Add folder       ││                                                     │
-└──────────────────────────┘└─────────────────────────────────────────────────────┘
- C-] prefix  C-] j/k switch dir  C-] s sidebar  C-] [ scroll
-```
+![Anduin with three projects: Claude Code running in webshop-api, with a terminal session beside it](docs/screenshots/main.png)
 
 ## Features
 
 - **Folders in a sidebar**: add them with the Finder picker or by typing a path.
-- **Several sessions per folder**: start, close and restart Claude sessions independently.
+- **Several sessions per folder**: start, close and restart sessions independently.
+- **Not just Claude**: a new session can also be a plain terminal or another AI CLI
+  (Codex, Gemini CLI, OpenCode, Cursor Agent, Copilot CLI, Amp, Aider, Goose, Qwen Code, Crush).
+  CLIs that aren't installed are shown dimmed.
 - **Status at a glance**: each session shows *working*, *idle*, *needs you* or *exited*. The bell from
   a session is passed on to you, so the Dock icon bounces when Claude is waiting.
 - **Mouse support**: click folders, sessions and the `+` / `×` buttons, and scroll the output.
@@ -70,7 +61,17 @@ anduin ~/work/api .    # add these folders to the list and open the first one
 anduin --help
 ```
 
-Pressing <kbd>Enter</kbd> on a folder starts Claude there. Keystrokes go to Claude
+Pressing <kbd>Enter</kbd> on an empty folder (or the `+` button) asks what to start:
+Claude Code, a terminal, or another AI CLI. Pick one with the arrow keys and
+<kbd>Enter</kbd>, its number, or a click. The folder Anduin opens at startup starts Claude directly.
+
+![The new-session chooser: Claude Code, Terminal and other AI CLIs, with the ones that aren't installed dimmed](docs/screenshots/chooser.png)
+
+A terminal session sits in the sidebar next to the Claude sessions of the same folder:
+
+![A terminal session in webshop-api showing git log and ls](docs/screenshots/terminal.png)
+
+Once a session runs, keystrokes go to it
 until you press the **prefix key**, <kbd>Ctrl</kbd>+<kbd>]</kbd>.
 
 ### Keys
@@ -82,7 +83,7 @@ After the prefix <kbd>Ctrl</kbd>+<kbd>]</kbd>:
 | `j` / `k` | next / previous session |
 | `s` or `Tab` | toggle focus between the sidebar and Claude |
 | `1`–`9` | jump to a folder |
-| `c` or `+` | new session in the current folder |
+| `c` or `+` | new session in the current folder (choose what to run) |
 | `x` | close the current session |
 | `r` | restart the current session |
 | `n` | add a folder with the Finder picker |
@@ -114,7 +115,10 @@ Folders you add are saved there automatically.
   "command": "claude",
   "prefix": "ctrl-]",
   "tint": "orange",
-  "mascot": "cat"
+  "mascot": "cat",
+  "tools": [
+    { "name": "Kiro", "command": "kiro-cli chat" }
+  ]
 }
 ```
 
@@ -122,10 +126,11 @@ Folders you add are saved there automatically.
 | --- | --- | --- |
 | `projects` | `[]` | folders in the sidebar |
 | `default` | none | folder opened when Anduin starts without arguments |
-| `command` | `"claude"` | command run in each session, e.g. `"claude --continue"` |
+| `command` | `"claude"` | command for Claude Code sessions, e.g. `"claude --continue"` |
 | `prefix` | `"ctrl-]"` | prefix key, as `ctrl-<key>` |
 | `tint` | `"blue"` | `orange` (Claude's own colors), `blue`, `sky`, `indigo`, `purple`, `pink`, `teal`, `green`, or a hue in degrees |
 | `mascot` | Claude's | see below |
+| `tools` | `[]` | extra programs offered for new sessions, as `{ "name", "command" }` |
 
 ### Mascot
 
